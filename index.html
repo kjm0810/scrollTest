@@ -1,46 +1,197 @@
 <!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
-</head>
-<body>
-    <div class="wrap">
-        <div class="inputbox">
-            <input type="text">
-        </div>
-        
-    </div>
-</body>
+<html lang="zh-CN">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+		<title>HLS 视频播放（基于 hls.js）</title>
+		<!-- 引入最新稳定版 hls.js（CDN 加载，无需本地部署） -->
+		<script src="https://cdn.jsdelivr.net/npm/hls.js@1.4.17/dist/hls.min.js"></script>
+		<style>
+			/* 响应式视频容器：适配手机、平板、电脑屏幕 */
+			.video-wrapper {
+				width: 100%;
+				max-width: 1400px;
+				margin: 30px auto;
+				padding: 0 20px;
+				box-sizing: border-box;
+			}
+			#hlsVideo {
+				width: 100%;
+				height: auto;
+				border-radius: 8px;
+				box-shadow: 0 3px 10px rgba(0, 0, 0, 0.15);
+				background-color: #000; /* 加载时显示黑色背景，提升体验 */
+			}
+			/* 状态提示文本 */
+			.status-tip {
+				text-align: center;
+				color: #666;
+				font-size: 14px;
+				margin-top: 10px;
+			}
+		</style>
+	</head>
+	<body>
+		<div class="video-wrapper">
+			<!-- 视频标签：preload="metadata" 仅预加载元数据，避免浪费流量 -->
+			<video id="hlsVideo" controls preload="metadata" playsinline webkit-playsinline></video>
+			<div id="statusTip" class="status-tip">正在初始化播放器...</div>
+		</div>
+
+		<script>
+			// 1. 获取DOM元素
+			const videoElement = document.getElementById('hlsVideo');
+			const statusTip = document.getElementById('statusTip');
+			let hlsPlayer = null; // 存储 hls.js 实例
+			const hlsUrl = 'https://stream-byteplus.cencloud.com/kpop/PC2GZGYUks34068/index.m3u8'; // 你的 HLS 流地址
+
+			// 2. 核心播放初始化函数（兼容 Safari 原生 HLS 与其他浏览器 hls.js）
+			function initHlsPlayer() {
+				// 先清空状态提示
+				updateStatus('正在检查播放环境...');
+
+				// 情况1：浏览器原生支持 HLS（如 Safari、部分国产浏览器）
+				if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
+					updateStatus('检测到原生 HLS 支持，使用原生播放');
+					playWithNativeHLS();
+					return;
+				}
+
+				// 情况2：浏览器不支持原生 HLS，需用 hls.js
+				if (window.Hls && Hls.isSupported()) {
+					updateStatus('使用 hls.js 解析播放');
+					playWithHlsJs();
+				} else {
+					// 情况3：既不支持原生也不支持 hls.js（极少情况，如旧浏览器）
+					updateStatus('当前浏览器不支持 HLS 视频播放，请升级浏览器');
+					alert('当前浏览器不支持 HLS 视频播放，请使用 Chrome、Safari 或 Edge 等现代浏览器');
+				}
+			}
+
+			// 3. 原生 HLS 播放（主要适配 Safari，包括 iPhone/iPad）
+			function playWithNativeHLS() {
+				try {
+					// 关键：设置视频源（Safari 原生识别 .m3u8）
+					videoElement.src = hlsUrl;
+
+					// 监听原生播放事件
+					videoElement.addEventListener('loadedmetadata', () => {
+						updateStatus(`视频就绪：${videoElement.videoWidth}x${videoElement.videoHeight}`);
+						// 可选：自动播放（需注意浏览器自动播放策略，部分场景需用户交互后触发）
+						// videoElement.play().catch(err => updateStatus(`自动播放被阻止：${err.message}`));
+					});
+
+					videoElement.addEventListener('play', () => {
+						updateStatus('正在播放');
+					});
+
+					videoElement.addEventListener('pause', () => {
+						updateStatus('已暂停');
+					});
+
+					// 监听错误（重点排查 iPad Safari 加载失败问题）
+					videoElement.addEventListener('error', () => {
+						const errorMsg = getVideoErrorMsg(videoElement.error);
+						updateStatus(`原生播放错误：${errorMsg}`);
+						console.error('原生 HLS 错误详情：', videoElement.error);
+					});
+				} catch (err) {
+					updateStatus(`原生播放初始化失败：${err.message}`);
+					console.error('原生初始化异常：', err);
+				}
+			}
+
+			// 4. hls.js 播放（适配 Chrome、Firefox 等非 Safari 浏览器）
+			function playWithHlsJs() {
+				try {
+					// 创建 hls.js 实例，并配置优化参数（减少卡顿、适配弱网）
+					hlsPlayer = new Hls({
+						enableWorker: true, // 启用 Web Worker 解析，减轻主线程压力
+						lowLatencyMode: false, // 非直播场景关闭低延迟模式（降低资源占用）
+						autoLevelCapping: 3, // 限制最高清晰度（根据带宽自动切换，避免卡顿，按需调整）
+						abrEwmaDefaultEstimate: 5000000, // 初始带宽估计（5Mbps，可根据实际流调整）
+						abrEwmaFastLive: 3.0, // 直播带宽适应速度（非直播可设 1.0）
+						abrEwmaSlowLive: 9.0,
+						maxBufferLength: 30, // 最大缓存长度（30秒，避免缓存过多占用内存）
+						maxMaxBufferLength: 60, // 弱网时最大缓存（60秒）
+					});
+
+					// 绑定视频元素
+					hlsPlayer.attachMedia(videoElement);
+
+					// 监听 hls.js 关键事件
+					hlsPlayer.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
+						// 解析出 .m3u8 中的清晰度列表
+						const levels = data.levels.map((level) => `${level.height}p`).join(', ');
+						updateStatus(`HLS 索引解析完成，支持清晰度：${levels}`);
+						// 可选：自动播放
+						// videoElement.play().catch(err => updateStatus(`自动播放被阻止：${err.message}`));
+					});
+
+					// 监听播放状态变化
+					hlsPlayer.on(Hls.Events.BUFFER_APPENDING, () => {
+						updateStatus('正在缓冲视频...');
+					});
+					hlsPlayer.on(Hls.Events.BUFFER_EOS, () => {
+						updateStatus('视频播放完毕');
+					});
+
+					// 监听错误（分级错误处理，便于定位问题）
+					hlsPlayer.on(Hls.Events.ERROR, (event, data) => {
+						let errorMsg = '';
+						switch (data.type) {
+							case Hls.ErrorTypes.NETWORK_ERROR:
+								errorMsg = `网络错误：${data.details}（${data.fatal ? '致命错误' : '非致命错误'}）`;
+								// 非致命网络错误可尝试恢复
+								if (!data.fatal) hlsPlayer.startLoad();
+								break;
+							case Hls.ErrorTypes.MEDIA_ERROR:
+								errorMsg = `媒体错误：${data.details}（${data.err ? data.err.message : '未知原因'}）`;
+								break;
+							default:
+								errorMsg = `未知错误：${data.type} - ${data.details}`;
+						}
+						updateStatus(`hls.js 错误：${errorMsg}`);
+						console.error('hls.js 错误详情：', data);
+					});
+
+					// 加载 HLS 流
+					hlsPlayer.loadSource(hlsUrl);
+				} catch (err) {
+					updateStatus(`hls.js 初始化失败：${err.message}`);
+					console.error('hls.js 初始化异常：', err);
+				}
+			}
+
+			// 5. 辅助函数：解析视频错误信息（增强错误可读性）
+			function getVideoErrorMsg(videoError) {
+				if (!videoError) return '未知错误';
+				const errorCodes = {
+					1: '用户中止加载',
+					2: '网络错误（如跨域、404）',
+					3: '解码错误（流格式不支持、损坏）',
+					4: '播放格式不支持',
+				};
+				return errorCodes[videoError.code] || `错误码：${videoError.code}（${videoError.message}）`;
+			}
+
+			// 6. 辅助函数：更新状态提示
+			function updateStatus(msg) {
+				statusTip.textContent = `状态：${msg}`;
+				console.log('[HLS 播放状态]', msg);
+			}
+
+			// 7. 页面加载完成后初始化（确保 DOM 完全渲染）
+			window.addEventListener('DOMContentLoaded', initHlsPlayer);
+
+			// 8. 页面关闭/刷新前销毁播放器（释放资源，避免内存泄漏）
+			window.addEventListener('beforeunload', () => {
+				if (hlsPlayer) {
+					hlsPlayer.destroy();
+					hlsPlayer = null;
+				}
+				videoElement.src = ''; // 清空视频源
+			});
+		</script>
+	</body>
 </html>
-<style>
-*{
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
-    outline: none;
-}
-html, body {
-    width: 100dvw;
-    height: 100dvh;
-    overflow: hidden;
-}
-.wrap {
-    
-}
-.inputbox{
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    height: 64px;
-    padding: 8px;
-    border-top: 2px solid #000;
-}
-.inputbox input {
-    display: block;
-    width: 100%;
-    height: 100%;
-}
-</style>
